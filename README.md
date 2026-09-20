@@ -346,6 +346,18 @@ ftp> bye
 
 ![](assets/ftp-alice-signal-upload.png)
 
+**Bukti mika (read only)**
+```
+ftp 10.86.2.2
+Name: mika
+Password: password123
+ftp> ls
+ftp> !echo test > coba.txt
+ftp> put coba.txt
+550 Permission denied.
+ftp> bye
+```
+
 **Bukti eiri (blacklist)** — login langsung ditolak:
 
 ```
