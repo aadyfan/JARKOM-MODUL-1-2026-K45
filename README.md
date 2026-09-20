@@ -573,9 +573,26 @@ submission_scripts/
 
 11. Eiri membuktikan kelemahan protokol Telnet dengan membuat akun `phantom_user` (password `wired_ghost`) pada layanan `telnetd` di node Chisa, lalu login Telnet dari node Eiri ke Chisa sambil menangkap sesi di Wireshark. Tunjukkan kredensial plain-text lewat *Follow TCP Stream*, dan jelaskan mengapa tiap karakter terkirim dalam paket TCP terpisah.
 
+**Script** (`/root/setup_telnet_server.sh` di node **Chisa** — aman dijalankan berkali-kali tanpa error):
+
+```sh
+#!/bin/sh
+which telnetd || apk add busybox-extras
+id phantom_user 2>/dev/null || adduser -D -s /bin/sh phantom_user
+echo "phantom_user:wired_ghost" | chpasswd
+pgrep telnetd || telnetd -l /bin/login &
+```
+
+Penjelasan tiap baris:
+- `which telnetd || apk add busybox-extras` — cek dulu apakah program `telnetd` sudah terpasang; kalau belum, baru install paket `busybox-extras` yang menyediakannya.
+- `id phantom_user 2>/dev/null || adduser -D -s /bin/sh phantom_user` — cek dulu apakah user `phantom_user` sudah ada (`2>/dev/null` membuang pesan error kalau belum ada); kalau belum ada, baru dibuat user barunya.
+- `echo "phantom_user:wired_ghost" | chpasswd` — set password user itu; aman dijalankan berkali-kali tanpa syarat apapun.
+- `pgrep telnetd || telnetd -l /bin/login &` — cek dulu apakah server telnet sudah jalan; kalau belum, baru dinyalakan di background.
+
 Live capture dijalankan di GNS3 pada link **Switch2 Ethernet1 ↔ Chisa eth0**, lalu login Telnet dilakukan dari node Eiri (`10.86.3.3`) ke Chisa (`10.86.2.2`):
 
 ```sh
+which telnet || apk add busybox-extras
 telnet 10.86.2.2
 # login: phantom_user
 # Password: wired_ghost
@@ -603,13 +620,19 @@ Daftar paket di Wireshark (filter `telnet`) mengonfirmasi setiap keystroke terki
 
 12. Alice mencurigai Knights menjalankan layanan rahasia. Lakukan pemindaian port dari Alice ke Knights menggunakan Netcat untuk memeriksa port 22 (SSH) dan 80 (HTTP) yang terbuka, serta port rahasia 7777 yang tertutup. Analisis perbedaan TCP flag antara port terbuka (SYN-ACK) dan port tertutup (RST-ACK) di Wireshark.
 
-Live capture di GNS3 pada link **Switch3 Ethernet1 ↔ Knights eth0**, filter `tcp.port in (22, 80, 7777)`, lalu pemindaian dari node **Alice** (`10.86.1.2`) ke **Knights** (`10.86.3.2`):
+**Script** (`/root/scan_knights.sh` di node **Alice** — aman dijalankan berkali-kali, tidak membuat perubahan permanen apapun):
 
 ```sh
+#!/bin/sh
+which nc || apk add busybox-extras
 nc -zv 10.86.3.2 22
 nc -zv 10.86.3.2 80
 nc -zv 10.86.3.2 7777
 ```
+
+Penjelasan: `which nc || apk add busybox-extras` cek dulu apakah Netcat sudah terpasang, baru install kalau belum. Tiga baris `nc -zv` melakukan scan satu per satu — `-z` (*zero-I/O mode*) cuma mencoba buka koneksi TCP tanpa mengirim data apapun (mode pemindaian, bukan transfer), `-v` (verbose) membuat hasilnya langsung tercetak di layar ("succeeded" atau "refused") selain kelihatan di Wireshark.
+
+Live capture di GNS3 pada link **Switch3 Ethernet1 ↔ Knights eth0**, filter `tcp.port in (22, 80, 7777)`, lalu pemindaian dijalankan dari node **Alice** (`10.86.1.2`) ke **Knights** (`10.86.3.2`) pakai script di atas.
 
 ![](assets/portscan-tcp-overview.png)
 
@@ -630,23 +653,35 @@ Detail flag paket `RST, ACK` (port 7777 tertutup) — bit *Reset* dan *Acknowled
 
 13. Lain memerintahkan agar administrasi jarak jauh ke Knights memakai SSH tanpa password. Pasang OpenSSH server di Knights, buat pasangan kunci SSH di Mika untuk user `mika_admin`, konfigurasikan public key authentication (`PasswordAuthentication no`), lalu tangkap sesi koneksinya di Wireshark dan jelaskan mengapa kredensial tidak terlihat plain-text seperti pada Telnet.
 
-Konfigurasi akun & kunci (Knights & Mika):
+**Script 1** (`/root/setup_ssh_server.sh` di node **Knights** — dijalankan pertama, buka akses password sementara, aman diulang):
 
 ```sh
-# di Knights
-adduser -D -s /bin/sh mika_admin
+#!/bin/sh
+id mika_admin 2>/dev/null || adduser -D -s /bin/sh mika_admin
 echo "mika_admin:admin123" | chpasswd
-sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-killall sshd && /usr/sbin/sshd
+grep -q "^PasswordAuthentication yes" /etc/ssh/sshd_config || sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+pgrep sshd >/dev/null && pkill sshd; /usr/sbin/sshd
+```
 
-# di Mika
-ssh-keygen -t rsa -b 2048
+Penjelasan: `id mika_admin 2>/dev/null || adduser ...` bikin user cuma kalau belum ada. `grep -q ... || sed -i ...` cek dulu apakah config sudah `PasswordAuthentication yes`, baru ubah kalau belum. `pgrep sshd >/dev/null && pkill sshd; /usr/sbin/sshd` mematikan server lama (kalau ada) lalu menyalakan lagi dengan config terbaru.
+
+**Script 2** (`/root/setup_ssh_key.sh` di node **Mika** — dijalankan kedua, generate & transfer public key, aman diulang):
+
+```sh
+#!/bin/sh
+test -f /root/.ssh/id_rsa || ssh-keygen -t rsa -b 2048 -f /root/.ssh/id_rsa -N ""
 ssh-copy-id -o StrictHostKeyChecking=no mika_admin@10.86.3.2
+```
 
-# kembali di Knights, kunci akses password
+Penjelasan: `test -f ... || ssh-keygen ...` **penting** dicek dulu — kalau `ssh-keygen` dijalankan ulang tanpa syarat, dia bikin pasangan kunci baru yang berbeda dan bikin public key lama yang sudah terdaftar di Knights jadi tidak cocok lagi. `ssh-copy-id` sendiri aman diulang, kalau key sudah terdaftar dia cuma bilang "already exist".
+
+**Script 3** (`/root/lock_ssh_password.sh` di node **Knights** — dijalankan terakhir, setelah `ssh-copy-id` dari Mika berhasil, kunci akses password):
+
+```sh
+#!/bin/sh
 sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-killall sshd && /usr/sbin/sshd
+pkill sshd; /usr/sbin/sshd
 ```
 
 Bukti `ssh-copy-id` berhasil dan login berikutnya langsung masuk tanpa diminta password (public key authentication aktif):
@@ -673,6 +708,8 @@ Seluruh sesi setelah handshake (termasuk otentikasi dan interaksi shell) tercata
 > **Catatan validasi:** hasilnya benar dan lengkap, tapi ada satu detail yang meleset dari instruksi awal Gemini: mekanisme key exchange yang tertangkap di capture ini bukan `SSH_MSG_KEXDH_INIT`/`REPLY` (Diffie-Hellman klasik) seperti disebutkan sebelumnya, melainkan **`PQ/T Hybrid Key Exchange`** — algoritma *post-quantum hybrid* (gabungan Diffie-Hellman klasik dengan algoritma tahan-kuantum, umumnya `mlkem768x25519-sha256`) yang menjadi default di OpenSSH versi modern seperti `OpenSSH_10.2` yang dipakai node ini. Sebaiknya di laporan disebutkan nama paket yang **benar-benar muncul di capture** (`PQ/T Hybrid Key Exchange Init/Reply`), bukan istilah `KEXDH` lama, supaya sesuai dengan bukti screenshot.
 
 14. Eiri melancarkan serangan brute-force terhadap form login web Alice. Analisis file capture `wired_bruteforce.pcapng` untuk mengidentifikasi attacker IP, target IP & port, password `lain_admin` yang berhasil ditembus, serta web server software & versinya. Validasi temuan ke socket server port `3401`.
+
+> **Tidak ada script untuk soal ini** — seluruh pengerjaan murni analisis Wireshark (filter, Follow HTTP Stream) dan koneksi `nc` manual ke socket validasi, tidak ada instalasi atau konfigurasi apapun di node manapun.
 
 Buka file di Wireshark, filter POST request:
 
@@ -721,44 +758,47 @@ KOMJAR26{W1r3d_Brut3_cGduWZkXcbkOzOccwhMLtAkFr}
 > **Catatan validasi:** sudah tuntas dan cocok 100% dengan hasil analisis Wireshark — attacker IP, target, password, dan versi web server yang dimasukkan ke socket semuanya sama persis dengan yang terbaca di HTTP Stream #59, dan server memang mengonfirmasi dengan mengeluarkan flag. Tidak ada yang perlu dikoreksi.
 
 15. Eiri memasang perangkat keyboard USB berbahaya di node Alice. Buka file `soal15_wired_usb_hid.pcap`, identifikasi Vendor ID & Product ID perangkat USB dari deskriptornya, alamat nomor device USB, serta pesan rahasia yang berhasil dicuri dari keystroke. Validasi temuan ke socket server port `3402`.
+
+> **Catatan lokasi script:** `decode_hid.py` (di bawah) aslinya dijalankan di laptop Windows (pakai `tshark.exe` dan Python Windows), bukan di dalam node GNS3 manapun, karena file `.pcap`-nya dianalisis di laptop. Salinan arsipnya disimpan di `/root/decode_hid.py` pada node **Lain** supaya ikut ter-export bersama project GNS3, meski tidak benar-benar dieksekusi di node tersebut (Lain tidak punya `tshark`/Python terpasang).
+
 Vendor ID & Product ID diambil dari paket USB Device Descriptor (`bDescriptorType == 1`):
- 
+
 ```sh
 tshark -r soal15_wired_usb_hid.pcap -Y "usb.bDescriptorType == 1" -T fields -e frame.number -e usb.idVendor -e usb.idProduct -e usb.device_address
 ```
- 
+
 ```
 2    0x046d  0xc31c  0
 ```
- 
+
 Dikonfirmasi juga lewat Wireshark GUI (filter `usb.idVendor`), expand bagian **DEVICE DESCRIPTOR**. Wireshark otomatis mencocokkan angka `idVendor`/`idProduct` ke database USB ID bawaannya sendiri, sehingga langsung menampilkan nama vendor & produk terdaftar untuk ID tersebut:
- 
+
 ![](assets/usbhid-vendorid-productid-descriptor.png)
- 
+
 ```
 idVendor: Logitech, Inc. (0x046d)
 idProduct: Keyboard K120 (0xc31c)
 ```
- 
+
 Nilai mentahnya juga terlihat di hex dump packet: byte `6d 04` (little-endian) = `0x046d`, dan `1c c3` (little-endian) = `0xc31c` — cocok persis dengan hasil `tshark` di atas.
- 
+
 Device address `0` di atas hanyalah alamat sementara sebelum proses `SET_ADDRESS` (fase awal enumerasi USB). Device address yang benar-benar dipakai keyboard saat mengirim keystroke dicek lewat paket interrupt data-nya:
- 
+
 ```sh
 tshark -r soal15_wired_usb_hid.pcap -Y "usb.capdata || usbhid.data" -T fields -e usb.device_address
 ```
- 
+
 Seluruh baris hasilnya konsisten `7`, dikonfirmasi juga lewat Wireshark GUI (filter `usb.device_address == 7`, expand bagian **USB URB**, baris **"Device address: 7"**):
- 
+
 ![](assets/usbhid-device-address-detail.png)
- 
+
 Payload keystroke (`usb.capdata`/`usbhid.data`) diekstrak dan diterjemahkan lewat skrip Python `decode_hid.py` yang memetakan byte ke-0 (modifier/Shift) dan byte ke-2 (HID keycode) tiap laporan 8-byte ke karakter. Skrip ini otomatis mencari file pcap USB di folder yang sama dan menjalankan `tshark` secara internal (tanpa perlu bikin `keystrokes.txt` manual):
- 
+
 ```python
 import subprocess
 import glob
 import os
- 
+
 key_codes = {
     0x04: ('a', 'A'), 0x05: ('b', 'B'), 0x06: ('c', 'C'), 0x07: ('d', 'D'),
     0x08: ('e', 'E'), 0x09: ('f', 'F'), 0x0A: ('g', 'G'), 0x0B: ('h', 'H'),
@@ -774,16 +814,16 @@ key_codes = {
     0x31: ('\\', '|'), 0x33: (';', ':'), 0x34: ("'", '"'), 0x37: ('.', '>'),
     0x38: ('/', '?')
 }
- 
+
 # Cari otomatis file pcap USB di folder ini
 pcap_files = glob.glob("*usb*.pcap*")
 if not pcap_files:
     print("File pcap USB tidak ditemukan di folder ini! Cek nama filenya dengan perintah dir.")
     exit()
- 
+
 pcap_target = pcap_files[0]
 print(f"Menganalisis file: {pcap_target}")
- 
+
 cmd = [
     r"C:\Program Files\Wireshark\tshark.exe",
     "-r", pcap_target,
@@ -792,10 +832,10 @@ cmd = [
     "-e", "usb.capdata",
     "-e", "usbhid.data"
 ]
- 
+
 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 lines = proc.stdout.splitlines()
- 
+
 output = []
 for line in lines:
     hex_data = line.strip().replace(":", "")
@@ -807,7 +847,7 @@ for line in lines:
             continue
         modifier = data[0]
         keycode = data[2]
- 
+
         if keycode != 0 and keycode in key_codes:
             is_shift = (modifier & 0x02) or (modifier & 0x20)
             char = key_codes[keycode][1] if is_shift else key_codes[keycode][0]
@@ -818,45 +858,45 @@ for line in lines:
                 output.append(char)
     except ValueError:
         continue
- 
+
 print("\n=== TEKS HASIL DECODE USB HID ===")
 print("".join(output))
 ```
- 
+
 Jalankan:
- 
+
 ```sh
 python decode_hid.py
 ```
- 
+
 ```
 === TEKS HASIL DECODE USB HID ===
 Wired_Protocol_7_is_alive_2026
 ```
- 
+
 **Data hasil temuan:**
- 
+
 | Item | Nilai |
 | --- | --- |
 | Vendor ID | `0x046d` |
 | Product ID | `0xc31c` |
 | Device Address | `7` |
 | Pesan rahasia (decoded keystroke) | `Wired_Protocol_7_is_alive_2026` |
- 
+
 Validasi ke socket server dari node **Lain** di GNS3:
- 
+
 ```sh
 nc 10.4.89.247 3402
 ```
- 
+
 Jawaban dimasukkan sesuai urutan pertanyaan (Vendor ID → Product ID → device address → pesan rahasia) hingga keluar flag:
- 
+
 ![](assets/usbhid-validasi-port3402.png)
- 
+
 ```
 KOMJAR26{USB_K3ystr0k3_nM0pRmDSSzXL9AMo0DLdx3cPW}
 ```
- 
+
 > **Catatan validasi:** sudah tuntas dan dikonfirmasi benar oleh server (flag keluar). Vendor ID `0x046d` dan Product ID `0xc31c` terbukti asli terbaca langsung dari packet DEVICE DESCRIPTOR (bukan asumsi), dan nama "Logitech, Inc." / "Keyboard K120" yang muncul di Wireshark adalah hasil pencocokan otomatis Wireshark terhadap database USB ID resminya sendiri, bukan karangan. Satu hal yang sempat keliru di proses awal: device address diasumsikan `0` (nilai dari packet descriptor), padahal itu cuma alamat sementara pra-enumerasi — device address asli (`7`) baru ketemu setelah dicek dari paket interrupt data keystroke-nya, bukan dari paket descriptor.
 
 16. Eiri meninggalkan jejak pada FTP Server Chisa dengan menanamkan file malware yang kemudian diunduh oleh pihak lain menggunakan akun knights_agent. Analisis file capture untuk mengidentifikasi banner software FTP server, kredensial yang dipakai penyerang untuk login, serta ukuran file malware yang diunduh.
